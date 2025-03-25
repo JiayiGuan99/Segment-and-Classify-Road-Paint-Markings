@@ -12,9 +12,14 @@ from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 
 # Path to the chest-ct-segmentation dataset folder
-data_dir = "/content/segment-anything-2/chest-ct-segmentation"
+'''data_dir = "/content/segment-anything-2/chest-ct-segmentation"
 images_dir = os.path.join(data_dir, "images/images")
-masks_dir = os.path.join(data_dir, "masks/masks")
+masks_dir = os.path.join(data_dir, "masks/masks")'''
+
+data_dir = "D:/VCLab2/final_project/dataset"
+images_dir = os.path.join(data_dir, "sat_pave_dataset/selection_org")
+masks_dir = os.path.join(data_dir, "sat_pave_dataset/selection_label")
+
 
 # Load the train.csv file
 train_df = pd.read_csv(os.path.join(data_dir, "train.csv"))
@@ -48,45 +53,45 @@ for index, row in test_df.iterrows():
 
 
 def read_batch(data, visualize_data=False):
-   # Select a random entry
-   ent = data[np.random.randint(len(data))]
+    # Select a random entry
+    ent = data[np.random.randint(len(data))]
 
-   # Get full paths
-   Img = cv2.imread(ent["image"])[..., ::-1]  # Convert BGR to RGB
-   ann_map = cv2.imread(ent["annotation"], cv2.IMREAD_GRAYSCALE)  # Read annotation as grayscale
+    # Get full paths
+    Img = cv2.imread(ent["image"])[..., ::-1]  # Convert BGR to RGB
+    ann_map = cv2.imread(ent["annotation"], cv2.IMREAD_GRAYSCALE)  # Read annotation as grayscale
 
-   if Img is None or ann_map is None:
-       print(f"Error: Could not read image or mask from path {ent['image']} or {ent['annotation']}")
-       return None, None, None, 0
+    if Img is None or ann_map is None:
+        print(f"Error: Could not read image or mask from path {ent['image']} or {ent['annotation']}")
+        return None, None, None, 0
 
-   # Resize image and mask
-   r = np.min([1024 / Img.shape[1], 1024 / Img.shape[0]])  # Scaling factor
-   Img = cv2.resize(Img, (int(Img.shape[1] * r), int(Img.shape[0] * r)))
-   ann_map = cv2.resize(ann_map, (int(ann_map.shape[1] * r), int(ann_map.shape[0] * r)), interpolation=cv2.INTER_NEAREST)
+    # Resize image and mask
+    r = np.min([1024 / Img.shape[1], 1024 / Img.shape[0]])  # Scaling factor
+    Img = cv2.resize(Img, (int(Img.shape[1] * r), int(Img.shape[0] * r)))
+    ann_map = cv2.resize(ann_map, (int(ann_map.shape[1] * r), int(ann_map.shape[0] * r)), interpolation=cv2.INTER_NEAREST)
 
-   ### Continuation of read_batch() ###
+    ### Continuation of read_batch() ###
 
-   # Initialize a single binary mask
-   binary_mask = np.zeros_like(ann_map, dtype=np.uint8)
-   points = []
+    # Initialize a single binary mask
+    binary_mask = np.zeros_like(ann_map, dtype=np.uint8)
+    points = []
 
-   # Get binary masks and combine them into a single mask
-   inds = np.unique(ann_map)[1:]  # Skip the background (index 0)
-   for ind in inds:
-       mask = (ann_map == ind).astype(np.uint8)  # Create binary mask for each unique index
-       binary_mask = np.maximum(binary_mask, mask)  # Combine with the existing binary mask
+    # Get binary masks and combine them into a single mask
+    inds = np.unique(ann_map)[1:]  # Skip the background (index 0)
+    for ind in inds:
+        mask = (ann_map == ind).astype(np.uint8)  # Create binary mask for each unique index
+        binary_mask = np.maximum(binary_mask, mask)  # Combine with the existing binary mask
 
-   # Erode the combined binary mask to avoid boundary points
-   eroded_mask = cv2.erode(binary_mask, np.ones((5, 5), np.uint8), iterations=1)
+    # Erode the combined binary mask to avoid boundary points
+    eroded_mask = cv2.erode(binary_mask, np.ones((5, 5), np.uint8), iterations=1)
 
-   # Get all coordinates inside the eroded mask and choose a random point
-   coords = np.argwhere(eroded_mask > 0)
-   if len(coords) > 0:
-       for _ in inds:  # Select as many points as there are unique labels
-           yx = np.array(coords[np.random.randint(len(coords))])
-           points.append([yx[1], yx[0]])
+    # Get all coordinates inside the eroded mask and choose a random point
+    coords = np.argwhere(eroded_mask > 0)
+    if len(coords) > 0:
+        for _ in inds:  # Select as many points as there are unique labels
+            yx = np.array(coords[np.random.randint(len(coords))])
+            points.append([yx[1], yx[0]])
 
-   points = np.array(points)
+    points = np.array(points)
 
     ### Continuation of read_batch() ###
 
