@@ -1,5 +1,6 @@
 #https://www.datacamp.com/tutorial/sam2-fine-tuning
 import os
+import random
 import pandas as pd
 import cv2
 import torch
@@ -22,7 +23,7 @@ masks_dir = os.path.join(data_dir, "sat_pave_dataset/selection_label")
 
 
 # Load the train.csv file
-train_df = pd.read_csv(os.path.join(data_dir, "train.csv"))
+train_df = pd.read_csv(os.path.join(data_dir, "sat_pave_dataset/train.csv"))
 
 # Split the data into two halves: one for training and one for testing
 train_df, test_df = train_test_split(train_df, test_size=0.2, random_state=42)
@@ -102,7 +103,7 @@ def read_batch(data, visualize_data=False):
         # Original Image
         plt.subplot(1, 3, 1)
         plt.title('Original Image')
-        plt.imshow(img)
+        plt.imshow(Img)
         plt.axis('off')
 
         # Segmentation Mask (binary_mask)
@@ -132,14 +133,16 @@ def read_batch(data, visualize_data=False):
     points = np.expand_dims(points, axis=1)
 
     # Return the image, binarized mask, points, and number of masks
-    return img, binary_mask, points, len(inds)
+    return Img, binary_mask, points, len(inds)
 
 # Visualize the data
 Img1, masks1, points1, num_masks = read_batch(train_data, visualize_data=True)
 
 
-sam2_checkpoint = "sam2_hiera_small.pt"  # @param ["sam2_hiera_tiny.pt", "sam2_hiera_small.pt", "sam2_hiera_base_plus.pt", "sam2_hiera_large.pt"]
-model_cfg = "sam2_hiera_s.yaml" # @param ["sam2_hiera_t.yaml", "sam2_hiera_s.yaml", "sam2_hiera_b+.yaml", "sam2_hiera_l.yaml"]
+#sam2_checkpoint = "sam2_hiera_small.pt"  # @param ["sam2_hiera_tiny.pt", "sam2_hiera_small.pt", "sam2_hiera_base_plus.pt", "sam2_hiera_large.pt"]
+#model_cfg = "sam2_hiera_s.yaml" # @param ["sam2_hiera_t.yaml", "sam2_hiera_s.yaml", "sam2_hiera_b+.yaml", "sam2_hiera_l.yaml"]
+sam2_checkpoint = "D:/VCLab2/final_project/dataset/sat_pave_dataset/sam2.1_hiera_small.pt"
+model_cfg = "D:/VCLab2/final_project/dataset/sat_pave_dataset/sam2.1_hiera_s.yaml"
 
 sam2_model = build_sam2(model_cfg, sam2_checkpoint, device="cuda")
 predictor = SAM2ImagePredictor(sam2_model)
