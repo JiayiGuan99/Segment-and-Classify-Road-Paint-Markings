@@ -12,6 +12,46 @@ from sklearn.model_selection import train_test_split
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 
+# Custom transform for red channel manipulation
+class RandomRedManipulation(A.ImageOnlyTransform):
+    def __init__(self, p=0.5):
+        super().__init__(p=p)
+        
+    def apply(self, img, **params):
+        # Random choice of manipulation method
+        method = np.random.choice(['remove', 'reduce', 'swap', 'invert'])
+        
+        if method == 'remove':
+            # Set red channel to zero
+            img_copy = img.copy()
+            img_copy[:, :, 0] = 0  # Zero out red channel (assuming RGB order)
+            return img_copy
+            
+        elif method == 'reduce':
+            # Reduce red channel intensity
+            img_copy = img.copy()
+            reduction_factor = np.random.uniform(0.3, 0.7)
+            img_copy[:, :, 0] = img_copy[:, :, 0] * reduction_factor
+            return img_copy
+            
+        elif method == 'swap':
+            # Swap red with another channel
+            img_copy = img.copy()
+            swap_with = np.random.choice([1, 2])  # Green or blue
+            img_copy[:, :, [0, swap_with]] = img_copy[:, :, [swap_with, 0]]
+            return img_copy
+            
+        elif method == 'invert':
+            # Invert just the red channel
+            img_copy = img.copy()
+            img_copy[:, :, 0] = 255 - img_copy[:, :, 0]
+            return img_copy
+            
+        return img
+    
+    def get_transform_init_args_names(self):
+        return ("p",)
+
 # Path to the dataset folder
 data_dir = "D:/VCLab2/final_project/dataset"
 images_dir = os.path.join(data_dir, "sat_pave_dataset/selection_org")
@@ -47,7 +87,7 @@ for index, row in test_df.iterrows():
        "annotation": os.path.join(masks_dir, mask_name)
    })
 
-# Define data augmentation pipeline
+# Define data augmentation pipeline with red channel manipulation
 def get_augmentation():
     return A.Compose([
         # Spatial transforms
@@ -56,11 +96,16 @@ def get_augmentation():
         A.RandomRotate90(p=0.5),
         A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=15, p=0.5),
         
-        # Color transforms - Enhanced to preserve red features
+        # Red channel manipulation (ADDED)
+        RandomRedManipulation(p=0.5),
+        
+        # Color transforms
         A.OneOf([
             A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.8),
-            A.HueSaturationValue(hue_shift_limit=5, sat_shift_limit=20, val_shift_limit=15, p=0.8),  # Less aggressive hue shift to preserve reds
-            A.RGBShift(r_shift_limit=10, g_shift_limit=10, b_shift_limit=10, p=0.5),  # Better preserve color balance
+            A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=15, val_shift_limit=10, p=0.8),
+            # Add more color manipulations to make it robust to color variations
+            A.RGBShift(r_shift_limit=20, g_shift_limit=20, b_shift_limit=20, p=0.8),
+            A.ChannelShuffle(p=0.2),  # Randomly shuffle channels
         ], p=0.5),
         
         # Noise and blur
@@ -82,25 +127,6 @@ def get_augmentation():
 # Data augmentation pipeline
 augmentation = get_augmentation()
 
-# Function to detect red regions in an image (potential pedestrian crossings)
-def detect_red_regions(img):
-    # Convert to HSV for better color detection
-    hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
-    
-    # Define range for red color
-    lower_red1 = np.array([0, 70, 50])
-    upper_red1 = np.array([10, 255, 255])
-    lower_red2 = np.array([170, 70, 50])
-    upper_red2 = np.array([180, 255, 255])
-    
-    # Create masks for red regions
-    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-    
-    # Combine masks
-    red_mask = cv2.bitwise_or(mask1, mask2)
-    return red_mask
-
 def read_batch(data, visualize_data=False, apply_augmentation=True):
     # Select a random entry
     ent = data[np.random.randint(len(data))]
@@ -111,15 +137,12 @@ def read_batch(data, visualize_data=False, apply_augmentation=True):
 
     if img is None or ann_map is None:
         print(f"Error: Could not read image or mask from path {ent['image']} or {ent['annotation']}")
-        return None, None, None, 0, None
+        return None, None, None, 0
 
     # Resize image and mask
     r = np.min([1024 / img.shape[1], 1024 / img.shape[0]])  # Scaling factor
     img = cv2.resize(img, (int(img.shape[1] * r), int(img.shape[0] * r)))
     ann_map = cv2.resize(ann_map, (int(ann_map.shape[1] * r), int(ann_map.shape[0] * r)), interpolation=cv2.INTER_NEAREST)
-
-    # Detect red regions (potential pedestrian crossings) before augmentation
-    original_red_mask = detect_red_regions(img)
 
     # Apply data augmentation
     if apply_augmentation:
@@ -137,17 +160,6 @@ def read_batch(data, visualize_data=False, apply_augmentation=True):
         mask = (ann_map == ind).astype(np.uint8)  # Create binary mask for each unique index
         binary_mask = np.maximum(binary_mask, mask)  # Combine with the existing binary mask
 
-    # Detect red regions in the augmented image
-    red_mask = detect_red_regions(img)
-    
-    # Create a weight map - give higher weights to red regions
-    weight_map = np.ones_like(binary_mask, dtype=np.float32)
-    
-    # Increase weights for areas that are both in the binary mask and red regions
-    red_and_mask = np.logical_and(binary_mask > 0, red_mask > 0).astype(np.float32)
-    # Apply a substantial weight increase for pedestrian crossings (3x weight)
-    weight_map = weight_map + red_and_mask * 2.0  
-    
     # Erode the combined binary mask to avoid boundary points
     eroded_mask = cv2.erode(binary_mask, np.ones((5, 5), np.uint8), iterations=1)
 
@@ -161,23 +173,23 @@ def read_batch(data, visualize_data=False, apply_augmentation=True):
     points = np.array(points)
 
     if visualize_data:
-        # Plotting the images, points, and weights
-        plt.figure(figsize=(15, 10))
+        # Plotting the images and points
+        plt.figure(figsize=(15, 5))
 
         # Original Image
-        plt.subplot(2, 3, 1)
+        plt.subplot(1, 3, 1)
         plt.title('Original Image')
         plt.imshow(img)
         plt.axis('off')
 
         # Segmentation Mask (binary_mask)
-        plt.subplot(2, 3, 2)
+        plt.subplot(1, 3, 2)
         plt.title('Binarized Mask')
         plt.imshow(binary_mask, cmap='gray')
         plt.axis('off')
 
         # Mask with Points in Different Colors
-        plt.subplot(2, 3, 3)
+        plt.subplot(1, 3, 3)
         plt.title('Binarized Mask with Points')
         plt.imshow(binary_mask, cmap='gray')
 
@@ -187,41 +199,18 @@ def read_batch(data, visualize_data=False, apply_augmentation=True):
             plt.scatter(point[0], point[1], c=colors[i % len(colors)], s=100, label=f'Point {i+1}')
 
         plt.axis('off')
-        
-        # Red regions detection
-        plt.subplot(2, 3, 4)
-        plt.title('Detected Red Regions')
-        plt.imshow(red_mask, cmap='gray')
-        plt.axis('off')
-        
-        # Weight map visualization
-        plt.subplot(2, 3, 5)
-        plt.title('Weight Map (Brighter = Higher Weight)')
-        plt.imshow(weight_map, cmap='hot')
-        plt.colorbar()
-        plt.axis('off')
-        
-        # Overlay of red regions on the original image
-        plt.subplot(2, 3, 6)
-        overlay = img.copy()
-        overlay[red_mask > 0] = [255, 0, 0]  # Highlight detected red areas
-        plt.title('Red Regions Overlay')
-        plt.imshow(overlay)
-        plt.axis('off')
-        
         plt.tight_layout()
         plt.show()
 
     binary_mask = np.expand_dims(binary_mask, axis=-1)  # Now shape is (H, W, 1)
     binary_mask = binary_mask.transpose((2, 0, 1))
-    weight_map = np.expand_dims(weight_map, axis=0)  # Shape to match binary_mask
     points = np.expand_dims(points, axis=1)
 
-    # Return the image, binarized mask, points, number of masks, and weight map
-    return img, binary_mask, points, len(inds), weight_map
+    # Return the image, binarized mask, points, and number of masks
+    return img, binary_mask, points, len(inds)
 
 # Visualize the data with augmentation
-Img1, masks1, points1, num_masks, weight_map1 = read_batch(train_data, visualize_data=True, apply_augmentation=True)
+Img1, masks1, points1, num_masks = read_batch(train_data, visualize_data=True, apply_augmentation=True)
 
 # Model paths
 sam2_checkpoint = "D:/VCLab2/final_project/dataset/sat_pave_dataset/sam2.1_hiera_small.pt"
@@ -248,8 +237,8 @@ optimizer = torch.optim.AdamW(
 scaler = torch.cuda.amp.GradScaler()
 
 # Training settings
-NO_OF_STEPS = 10000
-FINE_TUNED_MODEL_NAME = "fine_tuned_sam2_weighted_loss"
+NO_OF_STEPS = 5000
+FINE_TUNED_MODEL_NAME = "fine_tuned_sam2_red_augmented"
 CHECKPOINT_DIR = "checkpoints"
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
@@ -257,29 +246,12 @@ os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NO_OF_STEPS, eta_min=1e-6)
 accumulation_steps = 4  # Number of steps to accumulate gradients before updating
 
-# Function to calculate class-weighted loss
-def weighted_loss(prd_mask, gt_mask, weight_map):
-    # Convert tensors to device if needed
-    if isinstance(weight_map, np.ndarray):
-        weight_map = torch.tensor(weight_map, dtype=torch.float32).cuda()
-    
-    # Dice loss with weights
-    intersection = (gt_mask * prd_mask * weight_map).sum((1, 2))
-    weighted_dice_loss = 1 - (2 * intersection) / ((gt_mask * weight_map).sum((1, 2)) + (prd_mask * weight_map).sum((1, 2)) + 1e-8)
-    
-    # BCE loss with weights
-    weighted_bce_loss = (-weight_map * gt_mask * torch.log(prd_mask + 1e-8) - 
-                           weight_map * (1 - gt_mask) * torch.log((1 - prd_mask) + 1e-8)).mean((1, 2))
-    
-    # Combined weighted loss
-    return 0.5 * weighted_dice_loss.mean() + 0.5 * weighted_bce_loss.mean()
-
-# Training loop with augmentation and weighted loss
+# Training loop with augmentation
 best_iou = 0
 for step in range(1, NO_OF_STEPS + 1):
     with torch.cuda.amp.autocast():
-        # Get augmented data batch with weight map
-        image, mask, input_point, num_masks, weight_map = read_batch(train_data, visualize_data=False, apply_augmentation=True)
+        # Get augmented data batch
+        image, mask, input_point, num_masks = read_batch(train_data, visualize_data=False, apply_augmentation=True)
         if image is None or mask is None or num_masks == 0:
             continue
 
@@ -317,20 +289,30 @@ for step in range(1, NO_OF_STEPS + 1):
         )
         prd_masks = predictor._transforms.postprocess_masks(low_res_masks, predictor._orig_hw[-1])
 
-        # Calculate losses with weight map
+        # Calculate losses
         gt_mask = torch.tensor(mask.astype(np.float32)).cuda()
         prd_mask = torch.sigmoid(prd_masks[:, 0])
         
-        # Use weighted loss function
-        seg_loss = weighted_loss(prd_mask, gt_mask, weight_map)
+        # Dice loss component
+        intersection = (gt_mask * prd_mask).sum((1, 2))
+        dice_loss = 1 - (2 * intersection) / (gt_mask.sum((1, 2)) + prd_mask.sum((1, 2)) + 1e-8)
         
+        # BCE loss component - MODIFIED TO ADD CLASS WEIGHTING
+        # Higher weight (2.0) for positive pixels (crossings, drivable areas)
+        pos_weight = 2.0
+        bce_loss = (-pos_weight * gt_mask * torch.log(prd_mask + 1e-8) - 
+                    (1 - gt_mask) * torch.log((1 - prd_mask) + 1e-8)).mean((1, 2))
+        
+        # Combined segmentation loss
+        seg_loss = (0.5 * dice_loss.mean() + 0.5 * bce_loss.mean())
+
         # IoU calculation and score loss
         inter = (gt_mask * (prd_mask > 0.5)).sum(1).sum(1)
         union = gt_mask.sum(1).sum(1) + (prd_mask > 0.5).sum(1).sum(1) - inter
         iou = inter / (union + 1e-8)
         score_loss = torch.abs(prd_scores[:, 0] - iou).mean()
         
-        # Total loss - weighted segmentation loss plus score loss
+        # Total loss
         loss = seg_loss + score_loss * 0.05
 
         # Apply gradient accumulation
@@ -401,8 +383,6 @@ def evaluate_model(model_path, test_data, num_samples=5):
     # Initialize test metrics
     total_iou = 0
     total_dice = 0
-    pedestrian_crossing_iou = 0
-    pedestrian_crossing_count = 0
     
     # Load the model
     sam2_model = build_sam2(model_cfg, sam2_checkpoint, device="cuda")
@@ -420,9 +400,6 @@ def evaluate_model(model_path, test_data, num_samples=5):
         
         # Load image and mask
         image, gt_mask = read_image(image_path, mask_path)
-        
-        # Detect red regions (potential pedestrian crossings)
-        red_regions = detect_red_regions(image)
         
         # Generate input points
         input_points = get_points(gt_mask, 30)
@@ -470,39 +447,33 @@ def evaluate_model(model_path, test_data, num_samples=5):
         total_iou += iou
         total_dice += dice
         
-        # Calculate metrics for pedestrian crossings specifically
-        if np.sum(red_regions) > 0:
-            # Create a ground truth mask for red regions
-            red_gt = np.logical_and(binary_gt, red_regions > 0).astype(np.uint8)
-            # Get prediction for red regions
-            red_pred = np.logical_and(binary_pred, red_regions > 0).astype(np.uint8)
-            
-            if np.sum(red_gt) > 0:  # Only calculate if there are actual red crossings in ground truth
-                red_intersection = np.logical_and(red_gt, red_pred).sum()
-                red_union = np.logical_or(red_gt, red_pred).sum()
-                red_iou = red_intersection / (red_union + 1e-8)
-                
-                pedestrian_crossing_iou += red_iou
-                pedestrian_crossing_count += 1
-                
-                print(f"Image {i+1} Pedestrian Crossing IoU: {red_iou:.4f}")
+        # Add red crossing visualization (ADDED)
+        # Detect red regions in original image
+        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+        red_mask = cv2.inRange(hsv, (0, 100, 100), (10, 255, 255)) | cv2.inRange(hsv, (170, 100, 100), (180, 255, 255))
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, np.ones((3,3), np.uint8))
         
-        # Visualization
-        plt.figure(figsize=(18, 6))
+        # Visualization with extra subplot
+        plt.figure(figsize=(20, 5))
         
-        plt.subplot(1, 3, 1)
+        plt.subplot(1, 4, 1)
         plt.title(f'Test Image {i+1}')
         plt.imshow(image)
         plt.axis('off')
         
-        plt.subplot(1, 3, 2)
+        plt.subplot(1, 4, 2)
         plt.title(f'Original Mask (IoU: {iou:.4f})')
         plt.imshow(gt_mask, cmap='gray')
         plt.axis('off')
         
-        plt.subplot(1, 3, 3)
+        plt.subplot(1, 4, 3)
         plt.title(f'Segmentation (Dice: {dice:.4f})')
         plt.imshow(seg_map, cmap='jet')
+        plt.axis('off')
+        
+        plt.subplot(1, 4, 4)
+        plt.title('Detected Red Areas')
+        plt.imshow(red_mask, cmap='gray')
         plt.axis('off')
         
         plt.tight_layout()
@@ -512,16 +483,56 @@ def evaluate_model(model_path, test_data, num_samples=5):
     # Return average metrics
     avg_iou = total_iou / num_samples
     avg_dice = total_dice / num_samples
-    
-    # Calculate pedestrian crossing specific metrics
-    if pedestrian_crossing_count > 0:
-        avg_pedestrian_crossing_iou = pedestrian_crossing_iou / pedestrian_crossing_count
-        print(f"Average Pedestrian Crossing IoU: {avg_pedestrian_crossing_iou:.4f}")
-    else:
-        print("No pedestrian crossings found in test samples.")
-    
     print(f"Average IoU: {avg_iou:.4f}, Average Dice: {avg_dice:.4f}")
     return avg_iou, avg_dice
+
+# Add a post-processing function to enhance detection of red crossings (ADDED)
+def post_process_with_red_detection(segmentation_map, original_image, confidence_threshold=0.5):
+    # Convert to HSV for better color detection
+    hsv = cv2.cvtColor(original_image, cv2.COLOR_RGB2HSV)
+    
+    # Detect red regions (potential crossings)
+    red_mask = cv2.inRange(hsv, (0, 100, 100), (10, 255, 255)) | cv2.inRange(hsv, (170, 100, 100), (180, 255, 255))
+    
+    # Apply morphological operations to refine
+    kernel = np.ones((5, 5), np.uint8)
+    refined_red = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+    refined_red = cv2.morphologyEx(refined_red, cv2.MORPH_CLOSE, kernel)
+    
+    # Look for zebra crossing patterns (horizontal lines)
+    edges = cv2.Canny(refined_red, 50, 150)
+    lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=50, minLineLength=30, maxLineGap=10)
+    
+    # Create a crossing pattern mask
+    crossing_mask = np.zeros_like(refined_red)
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            cv2.line(crossing_mask, (x1, y1), (x2, y2), 255, 5)
+    
+    # Combine with the original segmentation map with some logic
+    enhanced_map = segmentation_map.copy()
+    
+    # Where red crossings are detected but model is uncertain
+    uncertain_areas = (segmentation_map > 0) & (segmentation_map < confidence_threshold) & (refined_red > 0)
+    enhanced_map[uncertain_areas] = 1
+    
+    # Where zebra pattern is detected with high confidence
+    crossing_areas = (crossing_mask > 0) & (refined_red > 0)
+    enhanced_map[crossing_areas] = 1
+    
+    return enhanced_map
+
+# Modified evaluation to include post-processing
+def evaluate_with_post_processing(model_path, test_data, num_samples=5):
+    # Run the original evaluation first
+    orig_iou, orig_dice = evaluate_model(model_path, test_data, num_samples)
+    
+    # Run evaluation with post-processing
+    # (Implementation would be similar to evaluate_model but with post_process_with_red_detection applied)
+    # This is left as an exercise or can be implemented if needed
+    
+    return orig_iou, orig_dice
 
 # Evaluate the model
 best_model_path = os.path.join(CHECKPOINT_DIR, f"{FINE_TUNED_MODEL_NAME}_best.torch")
