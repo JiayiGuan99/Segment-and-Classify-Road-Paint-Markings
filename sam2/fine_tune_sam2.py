@@ -248,7 +248,7 @@ optimizer = torch.optim.AdamW(
 scaler = torch.cuda.amp.GradScaler()
 
 # Training settings
-NO_OF_STEPS = 10000
+NO_OF_STEPS = 40000
 FINE_TUNED_MODEL_NAME = "fine_tuned_sam2_weighted_loss"
 CHECKPOINT_DIR = "checkpoints"
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
@@ -397,12 +397,16 @@ def get_points(mask, num_points):
             points.append([[yx[1], yx[0]]])
     return np.array(points)
 
-def evaluate_model(model_path, test_data, num_samples=5):
+def evaluate_model(model_path, test_data, visualize_samples=10):
     # Initialize test metrics
     total_iou = 0
     total_dice = 0
     pedestrian_crossing_iou = 0
     pedestrian_crossing_count = 0
+    
+    # Create results directory
+    results_dir = "evaluation_results"
+    os.makedirs(results_dir, exist_ok=True)
     
     # Load the model
     sam2_model = build_sam2(model_cfg, sam2_checkpoint, device="cuda")
@@ -410,11 +414,22 @@ def evaluate_model(model_path, test_data, num_samples=5):
     predictor.model.load_state_dict(torch.load(model_path))
     predictor.model.eval()
     
-    # Select random test images
-    sample_entries = random.sample(test_data, min(num_samples, len(test_data)))
+    # Process all test data
+    print(f"Evaluating model on full test dataset ({len(test_data)} samples)...")
+    
+    # Create a CSV file to store metrics
+    csv_path = os.path.join(results_dir, "evaluation_metrics.csv")
+    with open(csv_path, 'w') as f:
+        f.write("sample_id,image_path,iou,dice,has_pedestrian_crossing,pedestrian_crossing_iou\n")
+    
+    # Select random samples for visualization
+    if visualize_samples > 0:
+        viz_indices = random.sample(range(len(test_data)), min(visualize_samples, len(test_data)))
+    else:
+        viz_indices = []
     
     # Process each sample
-    for i, entry in enumerate(sample_entries):
+    for i, entry in enumerate(test_data):
         image_path = entry['image']
         mask_path = entry['annotation']
         
@@ -427,6 +442,7 @@ def evaluate_model(model_path, test_data, num_samples=5):
         # Generate input points
         input_points = get_points(gt_mask, 30)
         if input_points.size == 0:
+            print(f"Skipping sample {i+1}/{len(test_data)} - no valid points found")
             continue
             
         # Perform inference
@@ -470,6 +486,10 @@ def evaluate_model(model_path, test_data, num_samples=5):
         total_iou += iou
         total_dice += dice
         
+        # Flag for pedestrian crossing presence
+        has_pedestrian_crossing = False
+        ped_crossing_iou = 0.0
+        
         # Calculate metrics for pedestrian crossings specifically
         if np.sum(red_regions) > 0:
             # Create a ground truth mask for red regions
@@ -478,51 +498,78 @@ def evaluate_model(model_path, test_data, num_samples=5):
             red_pred = np.logical_and(binary_pred, red_regions > 0).astype(np.uint8)
             
             if np.sum(red_gt) > 0:  # Only calculate if there are actual red crossings in ground truth
+                has_pedestrian_crossing = True
                 red_intersection = np.logical_and(red_gt, red_pred).sum()
                 red_union = np.logical_or(red_gt, red_pred).sum()
                 red_iou = red_intersection / (red_union + 1e-8)
                 
                 pedestrian_crossing_iou += red_iou
                 pedestrian_crossing_count += 1
+                ped_crossing_iou = red_iou
                 
-                print(f"Image {i+1} Pedestrian Crossing IoU: {red_iou:.4f}")
+                print(f"Sample {i+1}/{len(test_data)} - IoU: {iou:.4f}, Dice: {dice:.4f}, Ped. Crossing IoU: {red_iou:.4f}")
+        else:
+            print(f"Sample {i+1}/{len(test_data)} - IoU: {iou:.4f}, Dice: {dice:.4f}")
+            
+        # Write metrics to CSV
+        with open(csv_path, 'a') as f:
+            f.write(f"{i},{image_path},{iou:.6f},{dice:.6f},{int(has_pedestrian_crossing)},{ped_crossing_iou:.6f}\n")
         
-        # Visualization
-        plt.figure(figsize=(18, 6))
-        
-        plt.subplot(1, 3, 1)
-        plt.title(f'Test Image {i+1}')
-        plt.imshow(image)
-        plt.axis('off')
-        
-        plt.subplot(1, 3, 2)
-        plt.title(f'Original Mask (IoU: {iou:.4f})')
-        plt.imshow(gt_mask, cmap='gray')
-        plt.axis('off')
-        
-        plt.subplot(1, 3, 3)
-        plt.title(f'Segmentation (Dice: {dice:.4f})')
-        plt.imshow(seg_map, cmap='jet')
-        plt.axis('off')
-        
-        plt.tight_layout()
-        plt.savefig(f"test_result_{i+1}.png")
-        plt.show()
+        # Visualization for selected samples
+        if i in viz_indices:
+            plt.figure(figsize=(18, 6))
+            
+            plt.subplot(1, 3, 1)
+            plt.title(f'Test Image {i+1}')
+            plt.imshow(image)
+            plt.axis('off')
+            
+            plt.subplot(1, 3, 2)
+            plt.title(f'Original Mask (IoU: {iou:.4f})')
+            plt.imshow(gt_mask, cmap='gray')
+            plt.axis('off')
+            
+            plt.subplot(1, 3, 3)
+            plt.title(f'Segmentation (Dice: {dice:.4f})')
+            plt.imshow(seg_map, cmap='jet')
+            plt.axis('off')
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(results_dir, f"test_result_{i+1}.png"))
+            plt.close()
     
-    # Return average metrics
-    avg_iou = total_iou / num_samples
-    avg_dice = total_dice / num_samples
+    # Calculate and save average metrics
+    avg_iou = total_iou / len(test_data)
+    avg_dice = total_dice / len(test_data)
+    
+    results_summary = f"""
+    Evaluation Summary:
+    -------------------
+    Total samples: {len(test_data)}
+    Average IoU: {avg_iou:.4f}
+    Average Dice: {avg_dice:.4f}
+    """
     
     # Calculate pedestrian crossing specific metrics
     if pedestrian_crossing_count > 0:
         avg_pedestrian_crossing_iou = pedestrian_crossing_iou / pedestrian_crossing_count
-        print(f"Average Pedestrian Crossing IoU: {avg_pedestrian_crossing_iou:.4f}")
+        results_summary += f"""
+    Pedestrian Crossing Metrics:
+    ---------------------------
+    Total crossings found: {pedestrian_crossing_count}
+    Average Pedestrian Crossing IoU: {avg_pedestrian_crossing_iou:.4f}
+    """
     else:
-        print("No pedestrian crossings found in test samples.")
+        results_summary += "\nNo pedestrian crossings found in test samples."
     
-    print(f"Average IoU: {avg_iou:.4f}, Average Dice: {avg_dice:.4f}")
+    # Save summary to file
+    with open(os.path.join(results_dir, "evaluation_summary.txt"), 'w') as f:
+        f.write(results_summary)
+    
+    print(results_summary)
     return avg_iou, avg_dice
 
-# Evaluate the model
+# Evaluate the model on the full test dataset
+print(f"Total test samples: {len(test_data)}")
 best_model_path = os.path.join(CHECKPOINT_DIR, f"{FINE_TUNED_MODEL_NAME}_best.torch")
-evaluate_model(best_model_path, test_data, num_samples=5)
+evaluate_model(best_model_path, test_data, visualize_samples=20)
