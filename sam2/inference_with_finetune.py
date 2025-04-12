@@ -176,7 +176,7 @@ def segment_image(
 
 if __name__ == "__main__":
     # Configuration - update these paths according to your setup
-    IMAGE_PATH = "D:/VCLab2/final_project/dataset/sat_pave_dataset/selection_org/test_002.png"
+    IMAGE_PATH = "C:/Users/Shikaka/Desktop/Image_20250404135013.png"
     MODEL_CFG_PATH = "D:/VCLab2/final_project/dataset/sat_pave_dataset/sam2.1_hiera_s.yaml"
     CHECKPOINT_PATH = "D:/VCLab2/final_project/dataset/sat_pave_dataset/sam2.1_hiera_small.pt"
     FINE_TUNED_WEIGHTS_PATH = "checkpoints/fine_tuned_sam2_weighted_loss_final.torch"
