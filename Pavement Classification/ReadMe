@@ -1,0 +1,53 @@
+1. 如果SAM输出的仅仅只是pavement的分类的话
+2. 首先要对road marking进行segmentation, 然后再对提取出来的内容进行classification
+3. segmentation这一步有几个可选的方案: DeepLabv3, U-Net, SegFormer/Swin-Unet(Transformer类) - 感觉后两个比较可行
+这些需要的输入都是TiFF格式图像, 输出都是Binary marking进行segmentation
+4. 基于Mask的结果放入ViT进行分类是
+
+images 用于训练
+masks 用于监督
+
+split_dataset 这个文件只用运行一次来划分数据, 需要用在DataLoader后, DataProcessor前
+
+2025/03/25
+写完了DataProcessor，增加了augmentation，验证了datasetprocessor的可行性
+
+2025/03/26
+准备把patch放进model
+
+2025/03/27
+build fintune完了model， 通过val, 获得最佳权重文件:best_model.pth
+使用了20个epoch, 最后结果为： Epoch 20 - Training Loss: 0.0110
+Validation Loss:  0.011110, Pixel Acc: 0.996752, mIoU: 0.059231
+-- mIoU偏低，这个先不管，可能是类别不平衡导致的, 或者背景(pixel =0)太多导致的。
+-- 准确率高，mIoU偏低，从test结果定位是因为背景太多，下一步class_num, 这个函数写在utils里， 调用到train_loader就好了
+-- 和传统的object segmentation不一样，这里的mIoU衡量的是：在一张mask上，IoU_c = Intersection(Pc,Gc)/union(Pc,Gc), 然后取所有类别的平均值，得到mIoU
+
+2025/03/28
+加了颜色和class的映射关系
+加了wandb
+增加epoch到100看下结果
+
+2025/03/29
+combine instance
+按照instance分patch，准备数据送入ViT，但是实际上可能存在的难点：比如solid line, 特别长，怎么办？ -- 折中的解决策略是将长实例滑动窗口分割
+还有一个问题，是在Seg中处理数据的时候跳过了尺寸不足的patch
+
+2025/03/30
+尝试一下不同的segformer的backbone看会不会好一点？
+想了一下，ViT可能不是很合适？比如线很细的时候，给的gt也不是bounding box呀
+mIoU在除了背景类外特别低的原因是seg的计算方式导致的 = intersection / union, 在这个数据里面，gt是一条细线，pre更宽一点
+
+"""
+type字段的原始信息:
+['ss' 'rrx' 'sl' 'arrow' 'cw' 'rod' 'do not stop' 'sb' 'hov' 'lane' 'bus'
+ 'ds' 'bike' 'hash' 'bump' 'bs' 'arow' 'CW' 'SS' 's' 'ump' 'BIKE' 'SL'
+ 'ssY' 'BUMP' 'DO NOT STOP' 'ssy' 'p' 'ar' 'bumpp' None 'dsb' 'wheelchair'
+ 'pedesterian' 'bike lane' 'cross' 'hahs' 'DS' 'yy' 'bikew' 'do nots stop'
+ 'Hash' 'r' 'bmp' 'bus only' 'hike' 'slow' 'bikwe' 'bikw' 'biike' 'sr' 'l'
+ "cw' 'ssl' 'hashy' 'hashY' 'HASH' 'csl' 'stop line' 'solid']
+ 处理方式：
+1. 全部统一为小写
+2. 去掉None值
+3. 映射关系，加上为0的背景，一共15类
+"""

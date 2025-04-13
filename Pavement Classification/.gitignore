@@ -1,0 +1,13 @@
+# Ignore dataset folder
+dataset/
+out_put/
+splits/
+wandb/
+
+# Ignore data files
+EDA.py
+test.py
+minenotes 
+best_model_20250330_1756.pth
+best_model_20250330_2041.pth
+best_model_20250330_1857.pth
